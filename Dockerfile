@@ -13,7 +13,9 @@ RUN go install github.com/mildred/basecamp-to-hipchat
 
 ENV BASECAMP_USER=
 ENV BASECAMP_PASS=
-env BASECAMP_ACCOUNT=
+ENV BASECAMP_ACCOUNT=
+ENV BASECAMP_PROJECT=
+ENV BASECAMP_TODO_MATCHING=^(Projet|Avant-vente)
 ENV HIPCHAT_API_KEY=
 
 ENTRYPOINT /go/bin/basecamp-to-hipchat

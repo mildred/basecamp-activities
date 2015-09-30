@@ -1,5 +1,6 @@
-NAME=basecamp-to-hipchat
+NAME=basecamp-activities
 VERSION=$(shell git describe --always HEAD | sed -r 's/^[^0-9]//; s/[^0-9a-zA-Z]+/./g')
+BASECAMP_TODO_MATCHING=^(Projet|Avant-vente)
 
 -include config.mk
 
@@ -34,11 +35,13 @@ $(NAME).tar: Dockerfile
 	docker save $(NAME) >$@
 	docker rmi $(NAME)
 
-$(NAME).env: Makefile
+$(NAME).env: Makefile config.mk
 	: >$@
 	echo "BASECAMP_USER=$(BASECAMP_USER)" >>$@
 	echo "BASECAMP_PASS=$(BASECAMP_PASS)" >>$@
+	echo "BASECAMP_ACCOUNT=$(BASECAMP_ACCOUNT)" >>$@
 	echo "BASECAMP_PROJECT=$(BASECAMP_PROJECT)" >>$@
+	echo "BASECAMP_TODO_MATCHING=$(BASECAMP_TODO_MATCHING)" >>$@
 	echo "HIPCHAT_API_KEY=$(HIPCHAT_API_KEY)" >>$@
 
 docker-deb-package: $(NAME).tar $(NAME).env .tmp.after-install.sh .tmp.before-remove.sh

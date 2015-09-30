@@ -1,9 +1,8 @@
-Basecamp to HipChat Integration
-===============================
+Basecamp Activities Project Management
+======================================
 
-This software is monitoring the Basecamp API and report any new events to
-HipChat (event run while this program was running, it doesn't post past events
-before the daemon started)
+This manages the Activities project, update TODO items, ask for updates and
+generates a weekly recap.
 
 Hacking
 =======

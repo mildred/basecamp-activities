@@ -8,11 +8,11 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
 	"strconv"
+	"regexp"
 )
 
 type APIClient struct {
@@ -66,9 +66,15 @@ type (
 	}
 
 	Todo struct {
-		Id      int    `json:"id"`
-		Content string `json:"content"`
-		DueAt   string `json:"due_at"`
+		Id       int       `json:"id"`
+		Content  string    `json:"content"`
+		DueAt    string    `json:"due_at"`
+		Comments []Comment `json:"comments"`
+		Assignee struct {
+			Type string `json:"type"`
+			Id   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"assignee"`
 	}
 
 	TodoList struct {
@@ -91,6 +97,34 @@ type (
 			Completed []*Todo `json:"completed"`
 		}
 	}
+
+	Comment struct {
+		Id        int       `json:"id"`
+		Content   string    `json:"content"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Creator   Person    `json:"creator"`
+	}
+
+	Topic struct {
+		Id        int       `json:"id"`
+		Title     string    `json:"title"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+
+		Topicable struct {
+			Id   int    `json:"id"`
+			Type string `json:"type"`
+		} `json:"topicable"`
+	}
+
+	Message struct {
+		Id        int       `json:"id"`
+		Subject   string    `json:"subject"`
+		Content   string    `json:"content"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
 )
 
 func (api *APIClient) newRequest(account int, method, path string) (*http.Request, error) {
@@ -101,114 +135,82 @@ func (api *APIClient) newRequest(account int, method, path string) (*http.Reques
 		return nil, err
 	}
 	req.SetBasicAuth(api.Username, api.Password)
-	req.Header.Set("User-Agent", "basecamp-to-hipchat (shanti+basecamp@sogilis.com)")
+	req.Header.Set("User-Agent", "basecamp-activities (shanti+basecamp@sogilis.com)")
 	return req, nil
 }
 
-func (api *APIClient) projects(account int) ([]*Project, error) {
-	req, err := api.newRequest(account, "GET", "/projects.json")
+func accountUrl(account int, path string) string {
+	return fmt.Sprintf("https://basecamp.com/%d/api/v1%s", account, path)
+}
+
+func projectUrl(account, project int, path string) string {
+	return fmt.Sprintf("https://basecamp.com/%d/api/v1/projects/%d%s", account, project, path)
+}
+
+func (api *APIClient) request(method, url string, result interface{}) error {
+	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
+	req.SetBasicAuth(api.Username, api.Password)
+	req.Header.Set("User-Agent", "basecamp-activities (shanti+basecamp@sogilis.com)")
 
 	res, err := api.http.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	bytes, err := ioutil.ReadAll(res.Body)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	var result []*Project
-	if err := json.Unmarshal(bytes, &result); err != nil {
-		return nil, err
-	}
+	//log.Println(url)
+	//log.Println(string(bytes))
 
-	return result, nil
+	return json.Unmarshal(bytes, result)
 }
 
-func (api *APIClient) allEventsSincePage(account int, since time.Time, page int) ([]*Event, error) {
-	vals := url.Values{}
-	vals.Add("page", fmt.Sprintf("%d", page))
-	vals.Add("since", since.Format(time.RFC3339))
-
-	req, err := api.newRequest(account, "GET", "/events.json?"+vals.Encode())
-	if err != nil {
-		return nil, err
-	}
-
-	res, err := api.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	bytes, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var result []*Event
-	if err := json.Unmarshal(bytes, &result); err != nil {
-		return nil, err
-	}
-
-	//log.Printf("events.json since %v page %d: %d events", since, page, len(result))
-
-	return result, nil
+func (api *APIClient) projects(account int) ([]Project, error) {
+	var result []Project
+	err := api.request("GET", accountUrl(account, "/projects.json"), &result)
+	return result, err
 }
 
-func (api *APIClient) allEventsSince(account int, since time.Time) ([]*Event, error) {
-	var result []*Event
-	page := 1
-
-	lastResult, err := api.allEventsSincePage(account, since, page)
-	if err != nil {
-		return result, err
-	}
-
-	for len(lastResult) == 50 {
-		for _, ev := range lastResult {
-			result = append(result, ev)
-		}
-		page = page + 1
-
-		lastResult, err = api.allEventsSincePage(account, since, page)
-		if err != nil {
-			return result, err
-		}
-	}
-
-	for _, ev := range lastResult {
-		result = append(result, ev)
-	}
-
-	return result, nil
+func (api *APIClient) projectTopics(account, project int) ([]Topic, error) {
+	var result []Topic
+	err := api.request("GET", projectUrl(account, project, "/topics.json"), &result)
+	return result, err
 }
 
-func (api *APIClient) monitorEvents(account int, sleepTime time.Duration, since time.Time) <-chan interface{} {
-	c := make(chan interface{})
-	go func() {
-		for {
-			time.Sleep(sleepTime)
-			events, err := api.allEventsSince(account, since)
-			if err != nil {
-				c <- err
-				//log.Println(err)
-				continue
-			}
-			//since = time.Now()
-			for _, ev := range events {
-				//log.Println(ev)
-				c <- ev
-				if ev.CreatedAt.After(since) {
-					since = ev.CreatedAt
-				}
-			}
-		}
-	}()
-	return c
+func (api *APIClient) projectTodoLists(account, project int) ([]TodoList, error) {
+	var result []TodoList
+	err := api.request("GET", projectUrl(account, project, "/todolists.json"), &result)
+	return result, err
+}
+
+func (api *APIClient) projectTodoList(account, project, todolist int) (*TodoList, error) {
+	var result *TodoList
+	err := api.request("GET", projectUrl(account, project, fmt.Sprintf("/todolists/%d.json", todolist)), &result)
+	return result, err
+}
+
+func (api *APIClient) projectTodoListRemaining(account, project, todolist int) ([]Todo, error) {
+	var result []Todo
+	err := api.request("GET", projectUrl(account, project, fmt.Sprintf("/todolists/%d/todos/remaining.json", todolist)), &result)
+	return result, err
+}
+
+func (api *APIClient) projectTodo(account, project, todo int) (*Todo, error) {
+	var result *Todo
+	err := api.request("GET", projectUrl(account, project, fmt.Sprintf("/todos/%d.json", todo)), &result)
+	return result, err
+}
+
+func (api *APIClient) projectMessage(account, project, message int) (*Message, error) {
+	var result *Message
+	err := api.request("GET", projectUrl(account, project, fmt.Sprintf("/messages/%d.json", message)), &result)
+	return result, err
 }
 
 func getRoom(basecampProject string, rooms []hipchat.Room) (room *hipchat.Room, isDefault bool) {
@@ -230,7 +232,122 @@ func getRoom(basecampProject string, rooms []hipchat.Room) (room *hipchat.Room, 
 	return &defaultRoom, true
 }
 
-func run(basecampAccountId int, basecampUser, basecampPass, hipchatAPIKey string, sleepTime time.Duration) error {
+func findProjects(api *APIClient, account, project int, todoMatching *regexp.Regexp, since time.Time) error {
+	todolists, err := api.projectTodoLists(account, project)
+	if err != nil {
+		return err
+	}
+
+	for _, todolist := range todolists {
+		if todoMatching.MatchString(todolist.Name) {
+			remaining, err := api.projectTodoListRemaining(account, project, todolist.Id)
+			if err != nil {
+				return err
+			}
+			log.Println(todolist.Name)
+			for _, todo := range remaining {
+				fullTodo, err := api.projectTodo(account, project, todo.Id)
+				if err != nil {
+					return err
+				}
+
+				var report map[string][]string = map[string][]string{}
+				var newReport map[string]bool = map[string]bool{}
+				var newMessages int
+				update := regexp.MustCompile(`^(?i)Update\s*\:`)
+				updateItem := regexp.MustCompile(`^\s*([^\n:]*[^\n:\s])\s*:\s*(.*)\s*$`)
+				notAvailable := regexp.MustCompile(`^[Nn]/?[Aa]$`)
+
+				for _, comment := range fullTodo.Comments {
+					if ! comment.CreatedAt.Before(since) {
+						newMessages += 1
+					}
+					if update.MatchString(comment.Content) {
+						for _, up := range strings.Split(comment.Content, "<br><br>") {
+							up = strings.Replace(up, "<br>", "\n", -1)
+							ups := updateItem.FindStringSubmatch(up)
+							//log.Printf("update: %#v %#v", up, ups)
+							if ups != nil {
+								key := ups[1]
+								val := ups[2]
+								if val != "" {
+									if notAvailable.MatchString(val) {
+										val = ""
+									}
+									if comment.CreatedAt.Before(since) {
+										report[key] = []string{ val }
+									} else if newReport[key] {
+										if val != "" {
+											report[key] = append(report[key], val)
+										}
+									} else {
+										if val == "" {
+											delete(report, key)
+										} else {
+											report[key] = []string{ val }
+											newReport[key] = true
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+
+				log.Printf("  %s (%s, %d messages, %d new)", todo.Content, fullTodo.Assignee.Name, len(fullTodo.Comments), newMessages)
+				//log.Printf("    report = %#v", report)
+				for k, vals := range report {
+					if len(vals) == 0 {
+					} else if len(vals) == 1 {
+						log.Printf("    %s: %s", k, vals[0])
+					} else {
+						log.Printf("    %s:", k)
+						for _, v := range vals {
+						log.Printf("      - %s", v)
+						}
+					}
+				}
+
+			}
+		}
+	}
+
+	return nil
+}
+
+func lastReport(api *APIClient, account, project int, reportMatching *regexp.Regexp) (*Message, error) {
+	topics, err := api.projectTopics(account, project)
+	if err != nil {
+		return nil, err
+	}
+
+	var lastTime time.Time
+	var lastMessage int
+
+	for _, topic := range topics {
+		if reportMatching.MatchString(topic.Title) {
+			if topic.CreatedAt.After(lastTime) && topic.Topicable.Type == "Message" {
+				lastTime = topic.CreatedAt
+				lastMessage = topic.Topicable.Id
+			}
+		}
+	}
+
+	return api.projectMessage(account, project, lastMessage)
+}
+
+func run(basecampAccountId, basecampProjectId int, basecampUser, basecampPass, basecampTodoMatching, basecampReportMatching, hipchatAPIKey string, sleepTime time.Duration) error {
+
+	todoMatching, err := regexp.Compile(basecampTodoMatching)
+	if err != nil {
+		return err
+	}
+
+	reportMatching, err := regexp.Compile(basecampReportMatching)
+	if err != nil {
+		return err
+	}
+
 	api := &APIClient{
 		Username: basecampUser,
 		Password: basecampPass,
@@ -238,6 +355,15 @@ func run(basecampAccountId int, basecampUser, basecampPass, hipchatAPIKey string
 
 	hipchatClient := hipchat.NewClient(hipchatAPIKey)
 
+	_ = hipchatClient
+
+	last, err := lastReport(api, basecampAccountId, basecampProjectId, reportMatching)
+	if err != nil {
+		return err
+	}
+
+	return findProjects(api, basecampAccountId, basecampProjectId, todoMatching, last.CreatedAt)
+	/*
 	var c <-chan interface{} = api.monitorEvents(basecampAccountId, sleepTime, time.Now())
 	for val := range c {
 		if ev, ok := val.(*Event); ok {
@@ -276,6 +402,7 @@ func run(basecampAccountId int, basecampUser, basecampPass, hipchatAPIKey string
 			log.Println(val)
 		}
 	}
+	*/
 	return nil
 }
 
@@ -289,16 +416,27 @@ func GetenvInt(varname string, defaultVal int) int {
 	}
 }
 
+func GetenvStr(varname string, defaultVal string) string {
+	value := os.Getenv(varname)
+	if value == "" {
+		value = defaultVal
+	}
+	return value
+}
+
 func main() {
 	var basecampUser = flag.String("basecamp-user", os.Getenv("BASECAMP_USER"), "Username of special basecamp account that can access all projects")
 	var basecampPass = flag.String("basecamp-pass", os.Getenv("BASECAMP_PASS"), "Password of special basecamp account that can access all projects")
 	var basecampAccountId = flag.Int("basecamp-account", GetenvInt("BASECAMP_ACCOUNT", 0), "Basecamp Account ID")
+	var basecampProjectId = flag.Int("basecamp-project", GetenvInt("BASECAMP_PROJECT", 0), "Basecamp project ID")
+	var basecampTodoMatching = flag.String("basecamp-todo-matching", GetenvStr("BASECAMP_TODO_MATCHING", "^(Projet|Avant-vente)"), "Regexp that TODO lists must match")
+	var basecampReportMatching = flag.String("basecamp-report-matching", GetenvStr("BASECAMP_REPORT_MATCHING", "^Point d'activité"), "Regexp that reports must match")
 	var HipchatAPIKey = flag.String("hipchat-api-key", os.Getenv("HIPCHAT_API_KEY"), "API Key for Hipchat")
 	var refresh = flag.Duration("refresh", 10*time.Second, "Refresh period for basecamp monitoring")
 
 	flag.Parse()
 
-	err := run(*basecampAccountId, *basecampUser, *basecampPass, *HipchatAPIKey, *refresh)
+	err := run(*basecampAccountId, *basecampProjectId, *basecampUser, *basecampPass, *basecampTodoMatching, *basecampReportMatching, *HipchatAPIKey, *refresh)
 	if err != nil {
 		log.Fatalln(err)
 		os.Exit(1)
